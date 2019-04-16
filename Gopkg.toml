@@ -24,6 +24,13 @@
   unused-packages = true
   non-go = true
   go-tests = true
+  [[prune.project]]
+    non-go = false
+    name = "k8s.io/api"
+  [[prune.project]]
+    non-go = false
+    name = "k8s.io/apimachinery"
+  
 
 [[constraint]]
   branch = "master"
