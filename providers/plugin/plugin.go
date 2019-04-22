@@ -44,7 +44,7 @@ func NewPluginProvider(providerConfig, nodeName, operatingSystem string, interna
 	}
 
 
-	
+
 	executableName := fmt.Sprintf("virtual-kubelet-plugin-%s", config.PluginName)
 	pluginClient := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: shared.HandshakeConfig(config.PluginName),
