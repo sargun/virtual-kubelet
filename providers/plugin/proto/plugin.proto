@@ -1,7 +1,9 @@
 syntax = "proto3";
 package pluginproto;
 
-import "vendor/k8s.io/api/core/v1/generated.proto";
+import "k8s.io/api/core/v1/generated.proto";
+
+option go_package = "proto";
 
 // InitConfig is passed to the provider on initialization
 message InitConfig {
@@ -12,11 +14,11 @@ message InitConfig {
     int32 DaemonPort = 5;
 }
 
-message RegisterRequest {
+message ProviderRegisterRequest {
     InitConfig initConfig = 1;
 }
 
-message RegisterResponse {
+message ProviderRegisterResponse {
 
 }
 
@@ -53,10 +55,6 @@ message GetPodResponse {
     k8s.io.api.core.v1.Pod pod = 1;
 }
 
-message UpdatePodResponse {
-    k8s.io.api.core.v1.Pod pod = 1;
-}
-
 message GetContainerLogsRequest {
     string namespace = 1;
     string podName = 2;
@@ -90,8 +88,10 @@ message CapacityRequest {
 }
 
 message CapacityResponse {
-    // string can be ResourceName
-    map<string, double> resourceList = 1;
+    // string is ResourceName
+    // value is the canonical representation of the resource
+    // as rendered from String()
+    map<string, string> resourceList = 1;
 }
 
 message NodeConditionsRequest {
@@ -115,7 +115,7 @@ message NodeDaemonEndpointsRequest {
 }
 
 message NodeDaemonEndpointsResponse {
-    k8s.io.api.core.v1.NodeDaemonEndpoints = 1;
+    k8s.io.api.core.v1.NodeDaemonEndpoints nodeDaemonEndpoints = 1;
 }
 
 message OperatingSystemRequest {
@@ -128,7 +128,7 @@ message OperatingSystemResponse {
 
 // Provider implements the golang provider interface (roughly). ExecInContainer is not yet implemented.
 service Provider {
-    rpc Register(RegisterRequest) returns (RegisterResponse);
+    rpc Register(ProviderRegisterRequest) returns (ProviderRegisterResponse);
     rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
     rpc UpdatePod(UpdatePodRequest) returns (UpdatePodResponse);
     rpc DeletePod(DeletePodRequest) returns (DeletePodResponse);
@@ -142,3 +142,27 @@ service Provider {
     rpc NodeDaemonEndspoints(NodeDaemonEndpointsRequest) returns (NodeDaemonEndpointsResponse);
     rpc OperatingSystem(OperatingSystemRequest) returns (OperatingSystemResponse);
 }
+
+message PodNotifierProviderRegisterRequest {
+    uint32 podNotifierProviderBrokerId = 1;
+}
+
+message PodNotifierProviderRegisterResponse {
+}
+
+service PodNotifierProvider {
+    rpc Register(PodNotifierProviderRegisterRequest) returns (PodNotifierProviderRegisterResponse);
+}
+
+message NotifyPodsRequest {
+    k8s.io.api.core.v1.Pod pod = 1;
+}
+
+message NotifyPodsResponse {
+
+}
+
+service PodNotifierCallback {
+    rpc NotifyPods(NotifyPodsRequest) returns (NotifyPodsResponse);
+}
+

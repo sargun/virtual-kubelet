@@ -25,7 +25,7 @@ safebuild:
 
 .PHONY: build
 build: build_tags_actual := $(shell scripts/process_build_tags.sh $(build_tags))
-build: authors
+build: authors pluginproto
 	@echo "Building..."
 	$Q CGO_ENABLED=0 go build -a --tags '$(build_tags_actual)' -ldflags '-extldflags "-static"' -o bin/$(binary) $(if $V,-v) $(VERSION_FLAGS) $(IMPORT_PATH)
 
@@ -38,6 +38,12 @@ tags:
 release: build $(GOPATH)/bin/goreleaser
 	goreleaser
 
+providers/plugin/proto/plugin.pb.go: providers/plugin/proto/plugin.proto
+	$Q protoc -I providers/plugin/proto/ -I vendor/ providers/plugin/proto/plugin.proto --go_out=plugins=grpc:providers/plugin/proto/
+
+# Build / update the gRPC code for the plugin provider
+.PHONY: pluginproto
+pluginproto: providers/plugin/proto/plugin.pb.go
 
 ### Code not in the repository root? Another binary? Add to the path like this.
 # .PHONY: otherbin
