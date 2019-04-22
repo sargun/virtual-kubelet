@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"github.com/hashicorp/go-plugin"
 	"github.com/virtual-kubelet/virtual-kubelet/providers"
 	"github.com/virtual-kubelet/virtual-kubelet/providers/plugin/proto"
@@ -33,6 +34,7 @@ type podNotifier struct {
 }
 
 func (p *podNotifier) NotifyPods(ctx context.Context, callback func(*v1.Pod)) {
+	fmt.Println("WIRING UP NOTIFY PODS")
 	serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
 		s := grpc.NewServer(opts...)
 		proto.RegisterPodNotifierCallbackServer(s, &podNotifierCallbackServer{callback: callback})
@@ -50,6 +52,7 @@ type podNotifierCallbackServer struct {
 }
 
 func (p *podNotifierCallbackServer) NotifyPods(ctx context.Context, notifyPodsRequest *proto.NotifyPodsRequest) (*proto.NotifyPodsResponse, error) {
+	fmt.Println("Notifying pod: ", notifyPodsRequest.GetPod())
 	p.callback(notifyPodsRequest.GetPod())
 
 	return &proto.NotifyPodsResponse{}, nil

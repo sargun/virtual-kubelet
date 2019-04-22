@@ -165,4 +165,3 @@ message NotifyPodsResponse {
 service PodNotifierCallback {
     rpc NotifyPods(NotifyPodsRequest) returns (NotifyPodsResponse);
 }
-

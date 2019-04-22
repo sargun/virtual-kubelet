@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/virtual-kubelet/virtual-kubelet/providers"
 	"github.com/virtual-kubelet/virtual-kubelet/providers/plugin/proto"
+	"github.com/virtual-kubelet/virtual-kubelet/providers/plugin/shared"
 	"google.golang.org/grpc"
 	"io"
 	"k8s.io/api/core/v1"
@@ -43,21 +44,21 @@ type ProviderPlugin struct {
 func (p *ProviderPlugin) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	_, e := p.client.CreatePod(ctx, &proto.CreatePodRequest{
 		Pod: pod,
-	})
+	}, grpc.CallContentSubtype(shared.JSONCodecName))
 	return e
 }
 
 func (p *ProviderPlugin) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 	_, e := p.client.UpdatePod(ctx, &proto.UpdatePodRequest{
 		Pod: pod,
-	})
+	}, grpc.CallContentSubtype(shared.JSONCodecName))
 	return e
 }
 
 func (p *ProviderPlugin) DeletePod(ctx context.Context, pod *v1.Pod) error {
 	_, e := p.client.DeletePod(ctx, &proto.DeletePodRequest{
 		Pod: pod,
-	})
+	}, grpc.CallContentSubtype(shared.JSONCodecName))
 	return e
 }
 
@@ -65,7 +66,7 @@ func (p *ProviderPlugin) GetPod(ctx context.Context, namespace, name string) (*v
 	getPodResponse, e := p.client.GetPod(ctx, &proto.GetPodRequest{
 		Namespace: namespace,
 		Name: name,
-	})
+	}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	return getPodResponse.GetPod(), e
 }
@@ -75,7 +76,7 @@ func (p *ProviderPlugin) GetContainerLogs(ctx context.Context, namespace, podNam
 		Namespace: namespace,
 		PodName: podName,
 		ContainerName: containerName,
-	})
+	}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	return getContainerLogsResponse.GetLogs(), e
 }
@@ -88,19 +89,19 @@ func (p *ProviderPlugin) GetPodStatus(ctx context.Context, namespace, name strin
 	getPodStatusResponse, e := p.client.GetPodStatus(ctx, &proto.GetPodStatusRequest{
 		Namespace: namespace,
 		Name: name,
-	})
+	}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	return getPodStatusResponse.GetStatus(), e
 }
 
 func (p *ProviderPlugin) GetPods(ctx context.Context) ([]*v1.Pod, error) {
-	getPodsResponse, e := p.client.GetPods(ctx, &proto.GetPodsRequest{})
+	getPodsResponse, e := p.client.GetPods(ctx, &proto.GetPodsRequest{}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	return getPodsResponse.GetPods(), e
 }
 
 func (p *ProviderPlugin) Capacity(ctx context.Context) v1.ResourceList {
-	capacityResponse, e := p.client.Capacity(ctx, &proto.CapacityRequest{})
+	capacityResponse, e := p.client.Capacity(ctx, &proto.CapacityRequest{}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	// Is there a smarter thing to do here?
 	if e != nil {
@@ -115,7 +116,7 @@ func (p *ProviderPlugin) Capacity(ctx context.Context) v1.ResourceList {
 }
 
 func (p *ProviderPlugin) NodeConditions(ctx context.Context) []v1.NodeCondition {
-	nodeConditionsResponse, e := p.client.NodeConditions(ctx, &proto.NodeConditionsRequest{})
+	nodeConditionsResponse, e := p.client.NodeConditions(ctx, &proto.NodeConditionsRequest{}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	// Is there a smarter thing to do here?
 	if e != nil {
@@ -130,7 +131,7 @@ func (p *ProviderPlugin) NodeConditions(ctx context.Context) []v1.NodeCondition 
 }
 
 func (p *ProviderPlugin) NodeAddresses(ctx context.Context) []v1.NodeAddress {
-	nodeAddressesResponse, e := p.client.NodeAddresses(ctx, &proto.NodeAddressesRequest{})
+	nodeAddressesResponse, e := p.client.NodeAddresses(ctx, &proto.NodeAddressesRequest{}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	// Is there a smarter thing to do here?
 	if e != nil {
@@ -145,7 +146,7 @@ func (p *ProviderPlugin) NodeAddresses(ctx context.Context) []v1.NodeAddress {
 }
 
 func (p *ProviderPlugin) NodeDaemonEndpoints(ctx context.Context) *v1.NodeDaemonEndpoints {
-	nodeDaemonEndspointResponse, e := p.client.NodeDaemonEndspoints(ctx, &proto.NodeDaemonEndpointsRequest{})
+	nodeDaemonEndspointResponse, e := p.client.NodeDaemonEndspoints(ctx, &proto.NodeDaemonEndpointsRequest{}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	// Is there a smarter thing to do here?
 	if e != nil {
@@ -155,7 +156,7 @@ func (p *ProviderPlugin) NodeDaemonEndpoints(ctx context.Context) *v1.NodeDaemon
 }
 
 func (p *ProviderPlugin) OperatingSystem() string {
-	operatingSystemResponse, e := p.client.OperatingSystem(context.TODO(), &proto.OperatingSystemRequest{})
+	operatingSystemResponse, e := p.client.OperatingSystem(context.TODO(), &proto.OperatingSystemRequest{}, grpc.CallContentSubtype(shared.JSONCodecName))
 
 	// Is there a smarter thing to do here?
 	if e != nil {

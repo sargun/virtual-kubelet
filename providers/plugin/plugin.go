@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/pkg/errors"
+	"github.com/virtual-kubelet/virtual-kubelet/providers"
 	"github.com/virtual-kubelet/virtual-kubelet/providers/plugin/proto"
 	"github.com/virtual-kubelet/virtual-kubelet/providers/plugin/shared"
-
 	"os"
 	"os/exec"
 	"regexp"
@@ -25,25 +25,43 @@ type Configuration struct {
 	PluginName string `json:"pluginName,omitempty"`
 }
 
+type simpleProvider struct {
+	providers.Provider
+}
+
+type providerWithPodNotifier struct {
+	providers.Provider
+	providers.PodNotifier
+}
 
 // NewPluginProvider creates a new PluginProvider
-func NewPluginProvider(providerConfig, nodeName, operatingSystem string, internalIP string, daemonEndpointPort int32) (*ProviderPlugin, error) {
+func NewPluginProvider(providerConfig, nodeName, operatingSystem string, internalIP string, daemonEndpointPort int32) (providers.Provider, error) {
+	var podNotifierProvider providers.PodNotifier
+
 	var config Configuration
 	if err := loadConfig(providerConfig, &config); err != nil {
 		return nil, err
 	}
 
+
+	
 	executableName := fmt.Sprintf("virtual-kubelet-plugin-%s", config.PluginName)
 	pluginClient := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: shared.HandshakeConfig(config.PluginName),
-		Plugins: map[string]plugin.Plugin{
-			shared.ProviderPluginName:  &providerPlugin{},
-			shared.PodNotifierProviderName: &podNotifierPlugin{},
+		VersionedPlugins: map[int]plugin.PluginSet{
+			shared.VersionWithFeatures(1): map[string]plugin.Plugin{
+				shared.ProviderPluginName:  &providerPlugin{},
+			},
+			shared.VersionWithFeatures(1, shared.PodNotifier): map[string]plugin.Plugin{
+				shared.ProviderPluginName:    &providerPlugin{},
+				shared.PodNotifierPluginName: &podNotifierPlugin{},
+			},
 		},
 		Cmd: exec.Command(executableName),
 		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
 		Managed: true,
 	})
+
 
 	protocolClient, err := pluginClient.Client()
 	if err != nil {
@@ -58,20 +76,26 @@ func NewPluginProvider(providerConfig, nodeName, operatingSystem string, interna
 	providerPlugin := rawProviderPluginClient.(*ProviderPlugin)
 	_, err = providerPlugin.client.Register(context.TODO(), &proto.ProviderRegisterRequest{
 		InitConfig: &proto.InitConfig{
-			ConfigPath: providerConfig,
-			NodeName: nodeName,
+			ConfigPath:      providerConfig,
+			NodeName:        nodeName,
 			OperatingSystem: operatingSystem,
-			InternalIP: internalIP,
-			DaemonPort: daemonEndpointPort,
+			InternalIP:      internalIP,
+			DaemonPort:      daemonEndpointPort,
 		},
 	})
 
-	_, e := protocolClient.Dispense(shared.PodNotifierProviderName)
-	if e != nil {
-		fmt.Println(e)
+	if shared.HasFeature(pluginClient.NegotiatedVersion(), shared.PodNotifier) {
+		rawProviderPodNotifierClient, err := protocolClient.Dispense(shared.PodNotifierPluginName)
+		if err != nil {
+			return nil, err
+		}
+
+		podNotifierProvider = rawProviderPodNotifierClient.(*podNotifier)
+
+		return &providerWithPodNotifier{Provider:providerPlugin, PodNotifier: podNotifierProvider}, nil
 	}
 
-	return providerPlugin, err
+	return simpleProvider{Provider: providerPlugin}, nil
 }
 
 func loadConfig(providerConfig string, config *Configuration) error {
