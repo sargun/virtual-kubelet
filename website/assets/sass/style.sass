@@ -1,12 +1,12 @@
-{{ $fonts    := .Site.Params.fonts }}
+{{ $fonts    := site.Params.fonts }}
 {{ $fontSlice := (slice) }}
 {{ range $fonts }}
 {{ $fontSlice = $fontSlice | append (printf "%s:%s" (replace .name " " "+") (delimit .sizes ",")) }}
 {{ end }}
 {{ $fontsUrl := printf "https://fonts.googleapis.com/css?family=%s" (delimit $fontSlice "|") }}
-{{ $sansSerifFont := .Site.Params.sansSerifFont }}
-{{ $monospaceFont := .Site.Params.monospaceFont }}
-{{ $fontAwesomeVersion := .Site.Params.fontAwesomeVersion }}
+{{ $sansSerifFont := site.Params.sansSerifFont }}
+{{ $monospaceFont := site.Params.monospaceFont }}
+{{ $fontAwesomeVersion := site.Params.fontAwesomeVersion }}
 {{ $fontAwesomeUrl     := printf "https://use.fontawesome.com/releases/v%s/css/all.css" $fontAwesomeVersion }}
 
 @charset "utf-8"
@@ -89,7 +89,8 @@ blockquote
   +logo(40%, 90%)
 
 .is-cncf-logo
-  +logo(40%, 80%)
+  margin-top: 1.5rem
+  +logo(40%, 100%)
 
 .is-footer-logo
   +logo(10%, 20%)

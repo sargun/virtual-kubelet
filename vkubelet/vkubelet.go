@@ -2,6 +2,7 @@ package vkubelet
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -27,6 +28,7 @@ type Server struct {
 	resourceManager *manager.ResourceManager
 	podSyncWorkers  int
 	podInformer     corev1informers.PodInformer
+	readyCh         chan struct{}
 }
 
 // Config is used to configure a new server.
@@ -54,6 +56,7 @@ func New(cfg Config) *Server {
 		provider:        cfg.Provider,
 		podSyncWorkers:  cfg.PodSyncWorkers,
 		podInformer:     cfg.PodInformer,
+		readyCh:         make(chan struct{}),
 	}
 }
 
@@ -63,25 +66,52 @@ func New(cfg Config) *Server {
 // info to the Kubernetes API Server, such as logs, metrics, exec, etc.
 // See `AttachPodRoutes` and `AttachMetricsRoutes` to set these up.
 func (s *Server) Run(ctx context.Context) error {
-	q := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "podStatusUpdate")
-	go s.runProviderSyncWorkers(ctx, q)
+	workers := make([]workqueue.RateLimitingInterface, s.podSyncWorkers)
+
+	for idx := range workers {
+		name := fmt.Sprintf("podStatusUpdate-%d", idx)
+		q := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), name)
+		workerID := strconv.Itoa(idx)
+		go s.runProviderSyncWorker(ctx, workerID, q)
+		workers[idx] = q
+	}
 
 	if pn, ok := s.provider.(providers.PodNotifier); ok {
 		pn.NotifyPods(ctx, func(pod *corev1.Pod) {
-			s.enqueuePodStatusUpdate(ctx, q, pod)
+			s.enqueuePodStatusUpdateWithPod(ctx, workers, pod)
 		})
 	} else {
-		go s.providerSyncLoop(ctx, q)
+		go s.providerSyncLoop(ctx, workers)
 	}
 
-	return NewPodController(s).Run(ctx, s.podSyncWorkers)
+	pc := NewPodController(s)
+
+	go func() {
+		select {
+		case <-pc.inSyncCh:
+		case <-ctx.Done():
+		}
+		close(s.readyCh)
+	}()
+
+	return pc.Run(ctx, s.podSyncWorkers)
+}
+
+// Ready returns a channel which will be closed once the VKubelet is running
+func (s *Server) Ready() <-chan struct{} {
+	// TODO: right now all this waits on is the in-sync channel. Later, we might either want to expose multiple types
+	// of ready, for example:
+	// * In Sync
+	// * Control Loop running
+	// * Provider state synchronized with API Server state
+	return s.readyCh
 }
 
 // providerSyncLoop syncronizes pod states from the provider back to kubernetes
 // Deprecated: This is only used when the provider does not support async updates
 // Providers should implement async update support, even if it just means copying
 // something like this in.
-func (s *Server) providerSyncLoop(ctx context.Context, q workqueue.RateLimitingInterface) {
+func (s *Server) providerSyncLoop(ctx context.Context, q []workqueue.RateLimitingInterface) {
 	const sleepTime = 5 * time.Second
 
 	t := time.NewTimer(sleepTime)
@@ -104,15 +134,6 @@ func (s *Server) providerSyncLoop(ctx context.Context, q workqueue.RateLimitingI
 	}
 }
 
-func (s *Server) runProviderSyncWorkers(ctx context.Context, q workqueue.RateLimitingInterface) {
-	for i := 0; i < s.podSyncWorkers; i++ {
-		go func(index int) {
-			workerID := strconv.Itoa(index)
-			s.runProviderSyncWorker(ctx, workerID, q)
-		}(i)
-	}
-}
-
 func (s *Server) runProviderSyncWorker(ctx context.Context, workerID string, q workqueue.RateLimitingInterface) {
 	for s.processPodStatusUpdate(ctx, workerID, q) {
 	}
@@ -125,5 +146,5 @@ func (s *Server) processPodStatusUpdate(ctx context.Context, workerID string, q 
 	// Add the ID of the current worker as an attribute to the current span.
 	ctx = span.WithField(ctx, "workerID", workerID)
 
-	return handleQueueItem(ctx, q, s.podStatusHandler)
+	return handleQueueItem(ctx, q)
 }

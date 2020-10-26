@@ -25,14 +25,15 @@ import (
 	"github.com/virtual-kubelet/azure-aci/client/network"
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/virtual-kubelet/virtual-kubelet/providers"
 	"github.com/virtual-kubelet/virtual-kubelet/trace"
 	v1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
-	"k8s.io/client-go/tools/remotecommand"
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 )
 
@@ -54,10 +55,9 @@ const (
 )
 
 const (
-	gpuResourceName v1.ResourceName = "nvidia.com/gpu"
-	gpuTypeAnnotation               = "virtual-kubelet.io/gpu-type"
+	gpuResourceName   v1.ResourceName = "nvidia.com/gpu"
+	gpuTypeAnnotation                 = "virtual-kubelet.io/gpu-type"
 )
-
 
 // ACIProvider implements the virtual-kubelet provider interface and communicates with Azure's ACI APIs.
 type ACIProvider struct {
@@ -324,37 +324,37 @@ func (p *ACIProvider) setupCapacity(ctx context.Context) error {
 	defer span.End()
 	logger := log.G(ctx).WithField("method", "setupCapacity")
 
- 	// Set sane defaults for Capacity in case config is not supplied
+	// Set sane defaults for Capacity in case config is not supplied
 	p.cpu = "800"
 	p.memory = "4Ti"
 	p.pods = "800"
 
- 	if cpuQuota := os.Getenv("ACI_QUOTA_CPU"); cpuQuota != "" {
+	if cpuQuota := os.Getenv("ACI_QUOTA_CPU"); cpuQuota != "" {
 		p.cpu = cpuQuota
 	}
 
- 	if memoryQuota := os.Getenv("ACI_QUOTA_MEMORY"); memoryQuota != "" {
+	if memoryQuota := os.Getenv("ACI_QUOTA_MEMORY"); memoryQuota != "" {
 		p.memory = memoryQuota
 	}
 
- 	if podsQuota := os.Getenv("ACI_QUOTA_POD"); podsQuota != "" {
+	if podsQuota := os.Getenv("ACI_QUOTA_POD"); podsQuota != "" {
 		p.pods = podsQuota
 	}
 
- 	metadata, err := p.aciClient.GetResourceProviderMetadata(ctx)
+	metadata, err := p.aciClient.GetResourceProviderMetadata(ctx)
 
- 	if err != nil {
+	if err != nil {
 		msg := "Unable to fetch the ACI metadata"
 		logger.WithError(err).Error(msg)
 		return err
 	}
 
- 	if metadata == nil || metadata.GPURegionalSKUs == nil {
+	if metadata == nil || metadata.GPURegionalSKUs == nil {
 		logger.Warn("ACI GPU capacity is not enabled. GPU capacity will be disabled")
 		return nil
 	}
 
- 	for _, regionalSKU := range metadata.GPURegionalSKUs {
+	for _, regionalSKU := range metadata.GPURegionalSKUs {
 		if strings.EqualFold(regionalSKU.Location, p.region) && len(regionalSKU.SKUs) != 0 {
 			p.gpu = "100"
 			if gpu := os.Getenv("ACI_QUOTA_GPU"); gpu != "" {
@@ -364,7 +364,7 @@ func (p *ACIProvider) setupCapacity(ctx context.Context) error {
 		}
 	}
 
- 	return nil
+	return nil
 }
 
 func (p *ACIProvider) setupNetworkProfile(auth *client.Authentication) error {
@@ -800,39 +800,41 @@ func (p *ACIProvider) GetPodFullName(namespace string, pod string) string {
 	return fmt.Sprintf("%s-%s", namespace, pod)
 }
 
-// ExecInContainer executes a command in a container in the pod, copying data
+// RunInContainer executes a command in a container in the pod, copying data
 // between in/out/err and the container's stdin/stdout/stderr.
-func (p *ACIProvider) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, errstream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
-	// Cleanup on exit
+func (p *ACIProvider) RunInContainer(ctx context.Context, namespace, name, container string, cmd []string, attach providers.AttachIO) error {
+	out := attach.Stdout()
 	if out != nil {
 		defer out.Close()
 	}
-	if errstream != nil {
-		defer errstream.Close()
-	}
 
-	cg, _, err := p.aciClient.GetContainerGroup(context.TODO(), p.resourceGroup, name)
+	cg, _, err := p.aciClient.GetContainerGroup(ctx, p.resourceGroup, p.GetPodFullName(namespace, name))
 	if err != nil {
 		return err
 	}
 
 	// Set default terminal size
-	terminalSize := remotecommand.TerminalSize{
+	size := providers.TermSize{
 		Height: 60,
 		Width:  120,
 	}
 
+	resize := attach.Resize()
 	if resize != nil {
-		terminalSize = <-resize // Receive terminal resize event if resize stream is present
+		select {
+		case size = <-resize:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
-	ts := aci.TerminalSizeRequest{Height: int(terminalSize.Height), Width: int(terminalSize.Width)}
+	ts := aci.TerminalSizeRequest{Height: int(size.Height), Width: int(size.Width)}
 	xcrsp, err := p.aciClient.LaunchExec(p.resourceGroup, cg.Name, container, cmd[0], ts)
 	if err != nil {
 		return err
 	}
 
-	wsURI  := xcrsp.WebSocketURI
+	wsURI := xcrsp.WebSocketURI
 	password := xcrsp.Password
 
 	c, _, _ := websocket.DefaultDialer.Dial(wsURI, nil)
@@ -840,12 +842,17 @@ func (p *ACIProvider) ExecInContainer(name string, uid types.UID, container stri
 
 	// Cleanup on exit
 	defer c.Close()
-	defer out.Close()
 
+	in := attach.Stdin()
 	if in != nil {
-		// Inputstream
 		go func() {
 			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				var msg = make([]byte, 512)
 				n, err := in.Read(msg)
 				if err == io.EOF {
@@ -858,14 +865,18 @@ func (p *ACIProvider) ExecInContainer(name string, uid types.UID, container stri
 				if n > 0 { // Only call WriteMessage if there is data to send
 					c.WriteMessage(websocket.BinaryMessage, msg[:n])
 				}
-
 			}
 		}()
 	}
 
 	if out != nil {
-		//Outputstream
 		for {
+			select {
+			case <-ctx.Done():
+				break
+			default:
+			}
+
 			_, cr, err := c.NextReader()
 			if err != nil {
 				// Handle errors
@@ -875,7 +886,7 @@ func (p *ACIProvider) ExecInContainer(name string, uid types.UID, container stri
 		}
 	}
 
-	return nil
+	return ctx.Err()
 }
 
 // GetPodStatus returns the status of a pod by name that is running inside ACI
@@ -1238,7 +1249,7 @@ func (p *ACIProvider) getContainers(pod *v1.Pod) ([]aci.Container, error) {
 		}
 
 		if container.LivenessProbe != nil {
-			probe, err := getProbe(container.LivenessProbe)
+			probe, err := getProbe(container.LivenessProbe, container.Ports)
 			if err != nil {
 				return nil, err
 			}
@@ -1246,7 +1257,7 @@ func (p *ACIProvider) getContainers(pod *v1.Pod) ([]aci.Container, error) {
 		}
 
 		if container.ReadinessProbe != nil {
-			probe, err := getProbe(container.ReadinessProbe)
+			probe, err := getProbe(container.ReadinessProbe, container.Ports)
 			if err != nil {
 				return nil, err
 			}
@@ -1263,20 +1274,20 @@ func (p *ACIProvider) getGPUSKU(pod *v1.Pod) (aci.GPUSKU, error) {
 		return "", fmt.Errorf("The pod requires GPU resource, but ACI doesn't provide GPU enabled container group in region %s", p.region)
 	}
 
- 	if desiredSKU, ok := pod.Annotations[gpuTypeAnnotation]; ok {
+	if desiredSKU, ok := pod.Annotations[gpuTypeAnnotation]; ok {
 		for _, supportedSKU := range p.gpuSKUs {
 			if strings.EqualFold(string(desiredSKU), string(supportedSKU)) {
 				return supportedSKU, nil
 			}
 		}
 
- 		return "", fmt.Errorf("The pod requires GPU SKU %s, but ACI only supports SKUs %v in region %s", desiredSKU, p.region, p.gpuSKUs)
+		return "", fmt.Errorf("The pod requires GPU SKU %s, but ACI only supports SKUs %v in region %s", desiredSKU, p.region, p.gpuSKUs)
 	}
 
- 	return p.gpuSKUs[0], nil
+	return p.gpuSKUs[0], nil
 }
 
-func getProbe(probe *v1.Probe) (*aci.ContainerProbe, error) {
+func getProbe(probe *v1.Probe, ports []v1.ContainerPort) (*aci.ContainerProbe, error) {
 
 	if probe.Handler.Exec != nil && probe.Handler.HTTPGet != nil {
 		return nil, fmt.Errorf("probe may not specify more than one of \"exec\" and \"httpGet\"")
@@ -1298,8 +1309,26 @@ func getProbe(probe *v1.Probe) (*aci.ContainerProbe, error) {
 
 	var httpGET *aci.ContainerHTTPGetProbe
 	if probe.Handler.HTTPGet != nil {
+		var portValue int
+		port := probe.Handler.HTTPGet.Port
+		switch port.Type {
+		case intstr.Int:
+			portValue = port.IntValue()
+		case intstr.String:
+			portName := port.String()
+			for _, p := range ports {
+				if portName == p.Name {
+					portValue = int(p.ContainerPort)
+					break
+				}
+			}
+			if portValue == 0 {
+				return nil, fmt.Errorf("unable to find named port: %s", portName)
+			}
+		}
+
 		httpGET = &aci.ContainerHTTPGetProbe{
-			Port:   probe.Handler.HTTPGet.Port.IntValue(),
+			Port:   portValue,
 			Path:   probe.Handler.HTTPGet.Path,
 			Scheme: string(probe.Handler.HTTPGet.Scheme),
 		}

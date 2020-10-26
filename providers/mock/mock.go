@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"math/rand"
 	"time"
@@ -16,8 +15,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/remotecommand"
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 
 	"github.com/virtual-kubelet/virtual-kubelet/providers"
@@ -44,13 +41,15 @@ type MockProvider struct {
 	pods               map[string]*v1.Pod
 	config             MockConfig
 	startTime          time.Time
+	notifier           func(*v1.Pod)
 }
 
 // MockConfig contains a mock virtual-kubelet's configurable parameters.
 type MockConfig struct {
-	CPU    string `json:"cpu,omitempty"`
-	Memory string `json:"memory,omitempty"`
-	Pods   string `json:"pods,omitempty"`
+	CPU                string `json:"cpu,omitempty"`
+	Memory             string `json:"memory,omitempty"`
+	Pods               string `json:"pods,omitempty"`
+	DisableSoftDeletes bool   `json:"disableSoftDeletes,omitempty"`
 }
 
 // NewMockProvider creates a new MockProvider
@@ -73,7 +72,6 @@ func NewMockProvider(providerConfig, nodeName, operatingSystem string, internalI
 }
 
 // loadConfig loads the given json configuration files.
-
 func loadConfig(providerConfig, nodeName string) (config MockConfig, err error) {
 	data, err := ioutil.ReadFile(providerConfig)
 	if err != nil {
@@ -117,125 +115,15 @@ func (p *MockProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	// Add the pod's coordinates to the current span.
 	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name)
 
-	log.G(ctx).Info("receive CreatePod %q", pod.Name)
+	log.G(ctx).Infof("receive CreatePod %q", pod.Name)
 
 	key, err := buildKey(pod)
 	if err != nil {
 		return err
 	}
-
-	p.pods[key] = pod
-
-	return nil
-}
-
-// UpdatePod accepts a Pod definition and updates its reference.
-func (p *MockProvider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
-	ctx, span := trace.StartSpan(ctx, "UpdatePod")
-	defer span.End()
-
-	// Add the pod's coordinates to the current span.
-	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name)
-
-	log.G(ctx).Info("receive UpdatePod %q", pod.Name)
-
-	key, err := buildKey(pod)
-	if err != nil {
-		return err
-	}
-
-	p.pods[key] = pod
-
-	return nil
-}
-
-// DeletePod deletes the specified pod out of memory.
-func (p *MockProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error) {
-	ctx, span := trace.StartSpan(ctx, "DeletePod")
-	defer span.End()
-
-	// Add the pod's coordinates to the current span.
-	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name)
-
-	log.G(ctx).Info("receive DeletePod %q", pod.Name)
-
-	key, err := buildKey(pod)
-	if err != nil {
-		return err
-	}
-
-	if _, exists := p.pods[key]; !exists {
-		return strongerrors.NotFound(fmt.Errorf("pod not found"))
-	}
-
-	delete(p.pods, key)
-
-	return nil
-}
-
-// GetPod returns a pod by name that is stored in memory.
-func (p *MockProvider) GetPod(ctx context.Context, namespace, name string) (pod *v1.Pod, err error) {
-	ctx, span := trace.StartSpan(ctx, "GetPod")
-	defer func() {
-		span.SetStatus(ocstatus.FromError(err))
-		span.End()
-	}()
-
-	// Add the pod's coordinates to the current span.
-	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, name)
-
-	log.G(ctx).Info("receive GetPod %q", name)
-
-	key, err := buildKeyFromNames(namespace, name)
-	if err != nil {
-		return nil, err
-	}
-
-	if pod, ok := p.pods[key]; ok {
-		return pod, nil
-	}
-	return nil, strongerrors.NotFound(fmt.Errorf("pod \"%s/%s\" is not known to the provider", namespace, name))
-}
-
-// GetContainerLogs retrieves the logs of a container by name from the provider.
-func (p *MockProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
-	ctx, span := trace.StartSpan(ctx, "GetContainerLogs")
-	defer span.End()
-
-	// Add pod and container attributes to the current span.
-	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, podName, containerNameKey, containerName)
-
-	log.G(ctx).Info("receive GetContainerLogs %q", podName)
-	return "", nil
-}
-
-// Get full pod name as defined in the provider context
-// TODO: Implementation
-func (p *MockProvider) GetPodFullName(namespace string, pod string) string {
-	return ""
-}
-
-// ExecInContainer executes a command in a container in the pod, copying data
-// between in/out/err and the container's stdin/stdout/stderr.
-func (p *MockProvider) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
-	log.G(context.TODO()).Info("receive ExecInContainer %q", container)
-	return nil
-}
-
-// GetPodStatus returns the status of a pod by name that is "running".
-// returns nil if a pod by that name is not found.
-func (p *MockProvider) GetPodStatus(ctx context.Context, namespace, name string) (*v1.PodStatus, error) {
-	ctx, span := trace.StartSpan(ctx, "GetPodStatus")
-	defer span.End()
-
-	// Add namespace and name as attributes to the current span.
-	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, name)
-
-	log.G(ctx).Info("receive GetPodStatus %q", name)
 
 	now := metav1.NewTime(time.Now())
-
-	status := &v1.PodStatus{
+	pod.Status = v1.PodStatus{
 		Phase:     v1.PodRunning,
 		HostIP:    "1.2.3.4",
 		PodIP:     "5.6.7.8",
@@ -256,13 +144,8 @@ func (p *MockProvider) GetPodStatus(ctx context.Context, namespace, name string)
 		},
 	}
 
-	pod, err := p.GetPod(ctx, namespace, name)
-	if err != nil {
-		return nil, err
-	}
-
 	for _, container := range pod.Spec.Containers {
-		status.ContainerStatuses = append(status.ContainerStatuses, v1.ContainerStatus{
+		pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, v1.ContainerStatus{
 			Name:         container.Name,
 			Image:        container.Image,
 			Ready:        true,
@@ -275,7 +158,146 @@ func (p *MockProvider) GetPodStatus(ctx context.Context, namespace, name string)
 		})
 	}
 
-	return status, nil
+	p.pods[key] = pod
+	p.notifier(pod)
+
+	return nil
+}
+
+// UpdatePod accepts a Pod definition and updates its reference.
+func (p *MockProvider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
+	ctx, span := trace.StartSpan(ctx, "UpdatePod")
+	defer span.End()
+
+	// Add the pod's coordinates to the current span.
+	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name)
+
+	log.G(ctx).Infof("receive UpdatePod %q", pod.Name)
+
+	key, err := buildKey(pod)
+	if err != nil {
+		return err
+	}
+
+	p.pods[key] = pod
+	p.notifier(pod)
+
+	return nil
+}
+
+// DeletePod deletes the specified pod out of memory.
+func (p *MockProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error) {
+	ctx, span := trace.StartSpan(ctx, "DeletePod")
+	defer span.End()
+
+	// Add the pod's coordinates to the current span.
+	ctx = addAttributes(ctx, span, namespaceKey, pod.Namespace, nameKey, pod.Name)
+
+	log.G(ctx).Infof("receive DeletePod %q", pod.Name)
+
+	key, err := buildKey(pod)
+	if err != nil {
+		return err
+	}
+
+	if _, exists := p.pods[key]; !exists {
+		return strongerrors.NotFound(fmt.Errorf("pod not found"))
+	}
+
+	now := metav1.Now()
+	delete(p.pods, key)
+	pod.Status = v1.PodStatus{
+		Phase:  v1.PodSucceeded,
+		Reason: "MockProviderPodDeleted",
+	}
+
+	pod.Status.ContainerStatuses = []v1.ContainerStatus{}
+	for _, container := range pod.Spec.Containers {
+		pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, v1.ContainerStatus{
+			Name:         container.Name,
+			Image:        container.Image,
+			Ready:        true,
+			RestartCount: 0,
+			State: v1.ContainerState{
+				Terminated: &v1.ContainerStateTerminated{
+					Message:    "Mock provider terminated container upon deletion",
+					FinishedAt: now,
+					Reason:     "MockProviderPodContainerDeleted",
+				},
+			},
+		})
+	}
+	p.notifier(pod)
+
+	return nil
+}
+
+// GetPod returns a pod by name that is stored in memory.
+func (p *MockProvider) GetPod(ctx context.Context, namespace, name string) (pod *v1.Pod, err error) {
+	ctx, span := trace.StartSpan(ctx, "GetPod")
+	defer func() {
+		span.SetStatus(ocstatus.FromError(err))
+		span.End()
+	}()
+
+	// Add the pod's coordinates to the current span.
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, name)
+
+	log.G(ctx).Infof("receive GetPod %q", name)
+
+	key, err := buildKeyFromNames(namespace, name)
+	if err != nil {
+		return nil, err
+	}
+
+	if pod, ok := p.pods[key]; ok {
+		return pod, nil
+	}
+	return nil, strongerrors.NotFound(fmt.Errorf("pod \"%s/%s\" is not known to the provider", namespace, name))
+}
+
+// GetContainerLogs retrieves the logs of a container by name from the provider.
+func (p *MockProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
+	ctx, span := trace.StartSpan(ctx, "GetContainerLogs")
+	defer span.End()
+
+	// Add pod and container attributes to the current span.
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, podName, containerNameKey, containerName)
+
+	log.G(ctx).Infof("receive GetContainerLogs %q", podName)
+	return "", nil
+}
+
+// Get full pod name as defined in the provider context
+// TODO: Implementation
+func (p *MockProvider) GetPodFullName(namespace string, pod string) string {
+	return ""
+}
+
+// RunInContainer executes a command in a container in the pod, copying data
+// between in/out/err and the container's stdin/stdout/stderr.
+func (p *MockProvider) RunInContainer(ctx context.Context, namespace, name, container string, cmd []string, attach providers.AttachIO) error {
+	log.G(ctx).Infof("receive ExecInContainer %q", container)
+	return nil
+}
+
+// GetPodStatus returns the status of a pod by name that is "running".
+// returns nil if a pod by that name is not found.
+func (p *MockProvider) GetPodStatus(ctx context.Context, namespace, name string) (*v1.PodStatus, error) {
+	ctx, span := trace.StartSpan(ctx, "GetPodStatus")
+	defer span.End()
+
+	// Add namespace and name as attributes to the current span.
+	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, name)
+
+	log.G(ctx).Infof("receive GetPodStatus %q", name)
+
+	pod, err := p.GetPod(ctx, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pod.Status, nil
 }
 
 // GetPods returns a list of all pods known to be "running".
@@ -466,6 +488,14 @@ func (p *MockProvider) GetStatsSummary(ctx context.Context) (*stats.Summary, err
 
 	// Return the dummy stats.
 	return res, nil
+}
+
+func (p *MockProvider) NotifyPods(ctx context.Context, notifier func(*v1.Pod)) {
+	p.notifier = notifier
+}
+
+func (p *MockProvider) SoftDeletes() bool {
+	return !p.config.DisableSoftDeletes
 }
 
 func buildKeyFromNames(namespace string, name string) (string, error) {

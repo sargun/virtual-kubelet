@@ -57,9 +57,9 @@ func loadTLSConfig(certPath, keyPath string) (*tls.Config, error) {
 	}, nil
 }
 
-func setupHTTPServer(ctx context.Context, p providers.Provider, cfg *apiServerConfig) (cancel func(), retErr error) {
+func setupHTTPServer(ctx context.Context, p providers.Provider, cfg *apiServerConfig) (_ func(), retErr error) {
 	var closers []io.Closer
-	cancel = func() {
+	cancel := func() {
 		for _, c := range closers {
 			c.Close()
 		}
@@ -71,10 +71,18 @@ func setupHTTPServer(ctx context.Context, p providers.Provider, cfg *apiServerCo
 	}()
 
 	if cfg.CertPath == "" || cfg.KeyPath == "" {
-		log.G(ctx).
-			WithField("certPath", cfg.CertPath).
-			WithField("keyPath", cfg.KeyPath).
-			Error("TLS certificates not provided, not setting up pod http server")
+		mux := http.NewServeMux()
+		vkubelet.AttachPodRoutes(p, mux)
+
+		s := &http.Server{
+			Handler: mux,
+		}
+		l, err := net.Listen("tcp", cfg.Addr)
+		if err != nil {
+			return nil, errors.Wrap(err, "error setting up listener for pod http server")
+		}
+		go serveHTTP(ctx, s, l, "pods")
+		closers = append(closers, s)
 	} else {
 		tlsCfg, err := loadTLSConfig(cfg.CertPath, cfg.KeyPath)
 		if err != nil {
