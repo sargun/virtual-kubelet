@@ -79,6 +79,7 @@ func NewPodController(server *Server) *PodController {
 			if key, err := cache.MetaNamespaceKeyFunc(pod); err != nil {
 				log.L.Error(err)
 			} else {
+				log.L.Infof("AddFunc key %s to workqueue", key)
 				pc.workqueue.AddRateLimited(key)
 			}
 		},
@@ -98,6 +99,7 @@ func NewPodController(server *Server) *PodController {
 			if key, err := cache.MetaNamespaceKeyFunc(newPod); err != nil {
 				log.L.Error(err)
 			} else {
+				log.L.Infof("UpdateFunc key %s to workqueue", key)
 				pc.workqueue.AddRateLimited(key)
 			}
 		},
@@ -105,6 +107,7 @@ func NewPodController(server *Server) *PodController {
 			if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(pod); err != nil {
 				log.L.Error(err)
 			} else {
+				log.L.Infof("DeleteFunc key %s to workqueue", key)
 				pc.workqueue.AddRateLimited(key)
 			}
 		},
